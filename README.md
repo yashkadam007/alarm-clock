@@ -7,6 +7,7 @@ Textual-powered TUI: no web UI, no React, and no database.
 
 - Schedule an alarm after a duration.
 - Schedule an alarm at the next occurrence of a clock time.
+- Schedule recurring clock-time alarms daily or on selected weekdays.
 - Print a custom alarm label.
 - Ring the terminal bell unless disabled.
 - Play `assets/audio/alarm.mp3` when an alarm fires.
@@ -37,6 +38,18 @@ Run an alarm at a clock time:
 
 ```bash
 python3 alarm.py at 07:30 --label "Wake up"
+```
+
+Run a daily recurring alarm at a clock time:
+
+```bash
+python3 alarm.py at 07:30 --label "Wake up" --repeat daily
+```
+
+Run a recurring alarm on selected weekdays:
+
+```bash
+python3 alarm.py at 09:00 --label "Standup" --repeat days --days mon,tue,wed,thu,fri
 ```
 
 Preview the schedule without waiting:
@@ -97,9 +110,9 @@ The TUI supports:
 `list` prints a table of pending and triggered alarms:
 
 ```text
-ID        Time              Status     Label
-a1b2c3    2026-06-05 07:30  pending    Wake up
-d4e5f6    2026-06-04 18:10  triggered  Tea break
+ID        Time              Status     Repeat       Label
+a1b2c3    2026-06-05 07:30  pending    daily        Wake up
+d4e5f6    2026-06-04 18:10  triggered  none         Tea break
 ```
 
 Cancelled, expired, or stopped pending alarm processes are removed from the
@@ -122,6 +135,13 @@ Clock times:
 - `23:59:58`
 
 If an `at` time has already passed today, the alarm is scheduled for tomorrow.
+Recurring alarms are only supported for `at` clock-time alarms. Selected days
+accept short or full day names, such as `mon,wednesday,friday`.
+
+Recurring alarms keep one pending alarm ID and reschedule the same state record
+after each trigger. They depend on the alarm process staying alive; stopped
+processes are cleaned from the list under the same rules as one-time pending
+alarms.
 
 ## Audio Playback
 

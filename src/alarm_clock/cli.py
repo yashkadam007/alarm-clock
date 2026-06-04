@@ -7,11 +7,19 @@ import shutil
 import subprocess
 import sys
 import time as time_module
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, TextIO
 
-from .core import AlarmSpec, build_alarm_spec
+from .core import (
+    AlarmSpec,
+    REPEAT_NONE,
+    REPEAT_WEEKDAYS,
+    build_alarm_spec,
+    next_recurring_alarm_time,
+    parse_weekdays,
+)
 from .store import (
     add_alarm,
     cancel_alarm,
@@ -19,6 +27,7 @@ from .store import (
     list_alarms,
     mark_alarm_triggered,
     remove_alarm,
+    update_alarm_schedule,
 )
 
 
@@ -50,6 +59,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_schedule_arguments(
         at_parser,
         value_help="Clock time such as 07:30 or 23:59:58.",
+    )
+    at_parser.add_argument(
+        "--repeat",
+        choices=["none", "daily", "days"],
+        default=REPEAT_NONE,
+        help="Repeat at this clock time: none, daily, or selected days.",
+    )
+    at_parser.add_argument(
+        "--days",
+        help="Comma-separated repeat days for --repeat days, such as mon,tue,friday.",
     )
 
     subparsers.add_parser("list", help="List alarms.")
@@ -148,29 +167,63 @@ def run_alarm(
     stderr: TextIO = sys.stderr,
     bell: bool = True,
     audio_player: Callable[[Path], None] = play_audio_file,
+    alarm_id: str | None = None,
+    state_path: Path | None = None,
+    max_fires: int | None = None,
 ) -> None:
+    current_spec = spec
+    fired_count = 0
     print(
-        f"Scheduled alarm for {format_datetime(spec.scheduled_for)} "
-        f"({spec.source})",
+        f"Scheduled alarm for {format_datetime(current_spec.scheduled_for)} "
+        f"({current_spec.source}{format_repeat_suffix(current_spec)})",
         file=stdout,
     )
     stdout.flush()
 
     while True:
-        remaining = (spec.scheduled_for - now_provider()).total_seconds()
-        if remaining <= 0:
-            break
-        sleeper(min(1.0, remaining))
+        while True:
+            remaining = (current_spec.scheduled_for - now_provider()).total_seconds()
+            if remaining <= 0:
+                break
+            sleeper(min(1.0, remaining))
 
-    prefix = "\a" if bell else ""
-    print(f"{prefix}ALARM: {spec.label}", file=stdout)
-    stdout.flush()
+        prefix = "\a" if bell else ""
+        print(f"{prefix}ALARM: {current_spec.label}", file=stdout)
+        stdout.flush()
 
-    if spec.audio_file is not None:
-        try:
-            audio_player(spec.audio_file)
-        except RuntimeError as exc:
-            print(f"Warning: {exc}", file=stderr)
+        if current_spec.audio_file is not None:
+            try:
+                audio_player(current_spec.audio_file)
+            except RuntimeError as exc:
+                print(f"Warning: {exc}", file=stderr)
+
+        fired_count += 1
+        if current_spec.repeat == REPEAT_NONE:
+            return
+
+        clock_time = current_spec.clock_time or current_spec.scheduled_for.time()
+        next_scheduled_for = next_recurring_alarm_time(
+            now_provider(),
+            clock_time,
+            repeat=current_spec.repeat,
+            repeat_days=current_spec.repeat_days,
+        )
+        if alarm_id is not None:
+            updated = update_alarm_schedule(
+                alarm_id,
+                next_scheduled_for,
+                state_path=state_path,
+            )
+            if not updated:
+                return
+        current_spec = replace(current_spec, scheduled_for=next_scheduled_for)
+        print(
+            f"Rescheduled alarm for {format_datetime(current_spec.scheduled_for)}",
+            file=stdout,
+        )
+        stdout.flush()
+        if max_fires is not None and fired_count >= max_fires:
+            return
 
 
 def format_datetime(value: datetime) -> str:
@@ -179,6 +232,20 @@ def format_datetime(value: datetime) -> str:
 
 def format_list_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M")
+
+
+def format_repeat(repeat: str, repeat_days: tuple[str, ...]) -> str:
+    if repeat == REPEAT_NONE:
+        return "none"
+    if repeat == REPEAT_WEEKDAYS:
+        return ",".join(repeat_days)
+    return repeat
+
+
+def format_repeat_suffix(spec: AlarmSpec) -> str:
+    if spec.repeat == REPEAT_NONE:
+        return ""
+    return f", repeat {format_repeat(spec.repeat, spec.repeat_days)}"
 
 
 def print_alarm_list(
@@ -192,12 +259,16 @@ def print_alarm_list(
         print("No alarms.", file=stdout)
         return
 
-    print(f"{'ID':<8}  {'Time':<16}  {'Status':<9}  Label", file=stdout)
+    print(
+        f"{'ID':<8}  {'Time':<16}  {'Status':<9}  {'Repeat':<11}  Label",
+        file=stdout,
+    )
     for alarm in alarms:
         print(
             f"{alarm.alarm_id:<8}  "
             f"{format_list_datetime(alarm.scheduled_for):<16}  "
             f"{alarm.status:<9}  "
+            f"{format_repeat(alarm.repeat, alarm.repeat_days):<11}  "
             f"{alarm.label}",
             file=stdout,
         )
@@ -271,12 +342,21 @@ def main(
 
     try:
         audio_file = validate_audio_file(args.audio_file)
+        repeat_days = ()
+        if getattr(args, "repeat", REPEAT_NONE) == "days":
+            if not args.days:
+                raise ValueError("--days is required with --repeat days")
+            repeat_days = parse_weekdays(args.days)
+        elif getattr(args, "days", None):
+            raise ValueError("--days can only be used with --repeat days")
         spec = build_alarm_spec(
             mode=args.command,
             value=args.value,
             label=args.label,
             now=now_provider(),
             audio_file=audio_file,
+            repeat=getattr(args, "repeat", REPEAT_NONE),
+            repeat_days=repeat_days,
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=stderr)
@@ -285,7 +365,7 @@ def main(
     if args.dry_run:
         print(
             f"Scheduled alarm for {format_datetime(spec.scheduled_for)} "
-            f"({spec.source}): {spec.label}",
+            f"({spec.source}{format_repeat_suffix(spec)}): {spec.label}",
             file=stdout,
         )
         return 0
@@ -300,12 +380,15 @@ def main(
             stderr=stderr,
             bell=not args.no_bell,
             audio_player=audio_player,
+            alarm_id=alarm_id,
+            state_path=state_path,
         )
     except KeyboardInterrupt:
         remove_alarm(alarm_id, state_path=state_path)
         print("\nAlarm cancelled", file=stderr)
         return 130
 
-    mark_alarm_triggered(alarm_id, state_path=state_path)
+    if spec.repeat == REPEAT_NONE:
+        mark_alarm_triggered(alarm_id, state_path=state_path)
 
     return 0

@@ -8,7 +8,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .cli import DEFAULT_AUDIO_FILE_NAME, format_list_datetime
+from .cli import DEFAULT_AUDIO_FILE_NAME, format_list_datetime, format_repeat
+from .core import REPEAT_NONE, REPEAT_WEEKDAYS, WEEKDAY_NAMES, parse_repeat_mode
 from .store import (
     STATE_ENV_VAR,
     StoredAlarm,
@@ -24,6 +25,8 @@ def build_alarm_command(
     value: str,
     label: str,
     audio_file: Path | None = None,
+    repeat: str = REPEAT_NONE,
+    days: tuple[str, ...] = (),
 ) -> list[str]:
     command = [
         sys.executable,
@@ -35,6 +38,12 @@ def build_alarm_command(
     ]
     if audio_file is not None:
         command.extend(["--audio-file", str(audio_file)])
+    normalized_repeat = parse_repeat_mode(repeat)
+    if mode == "at" and normalized_repeat != REPEAT_NONE:
+        cli_repeat = "days" if normalized_repeat == REPEAT_WEEKDAYS else repeat
+        command.extend(["--repeat", cli_repeat])
+        if normalized_repeat == REPEAT_WEEKDAYS:
+            command.extend(["--days", ",".join(days)])
     return command
 
 
@@ -44,6 +53,8 @@ def launch_alarm(
     value: str,
     label: str,
     audio_file: Path | None = None,
+    repeat: str = REPEAT_NONE,
+    days: tuple[str, ...] = (),
     state_path: Path | None = None,
 ) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
@@ -56,6 +67,8 @@ def launch_alarm(
             value=value,
             label=label,
             audio_file=audio_file,
+            repeat=repeat,
+            days=days,
         ),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -64,12 +77,13 @@ def launch_alarm(
     )
 
 
-def alarm_table_rows(alarms: list[StoredAlarm]) -> list[tuple[str, str, str, str]]:
+def alarm_table_rows(alarms: list[StoredAlarm]) -> list[tuple[str, str, str, str, str]]:
     return [
         (
             alarm.alarm_id,
             format_list_datetime(alarm.scheduled_for),
             alarm.status,
+            format_repeat(alarm.repeat, alarm.repeat_days),
             alarm.label,
         )
         for alarm in alarms
@@ -82,7 +96,17 @@ def run_tui(*, state_path: Path | None = None) -> int:
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical
         from textual.screen import ModalScreen
-        from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Select, Static
+        from textual.widgets import (
+            Button,
+            Checkbox,
+            DataTable,
+            Footer,
+            Header,
+            Input,
+            Label,
+            Select,
+            Static,
+        )
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Textual is required for the TUI. Install it with "
@@ -112,6 +136,11 @@ def run_tui(*, state_path: Path | None = None) -> int:
             margin-bottom: 1;
         }
 
+        #repeat-days {
+            height: auto;
+            margin-bottom: 1;
+        }
+
         #add-actions {
             height: auto;
             align-horizontal: right;
@@ -128,6 +157,23 @@ def run_tui(*, state_path: Path | None = None) -> int:
                 )
                 yield Input(placeholder="10m, 1h30m, 07:30", id="alarm-value")
                 yield Input(placeholder="Label", id="alarm-label")
+                yield Select(
+                    [
+                        ("No repeat", "none"),
+                        ("Daily", "daily"),
+                        ("Selected days", "weekdays"),
+                    ],
+                    id="alarm-repeat",
+                    value="none",
+                )
+                with Vertical(id="repeat-days"):
+                    yield Checkbox("Monday", id="repeat-mon")
+                    yield Checkbox("Tuesday", id="repeat-tue")
+                    yield Checkbox("Wednesday", id="repeat-wed")
+                    yield Checkbox("Thursday", id="repeat-thu")
+                    yield Checkbox("Friday", id="repeat-fri")
+                    yield Checkbox("Saturday", id="repeat-sat")
+                    yield Checkbox("Sunday", id="repeat-sun")
                 yield Input(
                     placeholder=f"Audio file override, default {DEFAULT_AUDIO_FILE_NAME}",
                     id="alarm-audio",
@@ -148,10 +194,25 @@ def run_tui(*, state_path: Path | None = None) -> int:
             mode = self.query_one("#alarm-mode", Select).value
             value = self.query_one("#alarm-value", Input).value.strip()
             label = self.query_one("#alarm-label", Input).value.strip() or "Alarm"
+            repeat = self.query_one("#alarm-repeat", Select).value
+            selected_days = tuple(
+                day
+                for day in WEEKDAY_NAMES
+                if self.query_one(f"#repeat-{day}", Checkbox).value
+            )
             audio_file = self.query_one("#alarm-audio", Input).value.strip()
 
             if not value:
                 self.app.notify("Enter a duration or clock time", severity="error")
+                return
+            if mode != "at" and repeat != "none":
+                self.app.notify(
+                    "Repeat is only available for clock-time alarms",
+                    severity="error",
+                )
+                return
+            if repeat == "weekdays" and not selected_days:
+                self.app.notify("Select at least one repeat day", severity="error")
                 return
 
             self.dismiss(
@@ -159,6 +220,8 @@ def run_tui(*, state_path: Path | None = None) -> int:
                     "mode": str(mode),
                     "value": value,
                     "label": label,
+                    "repeat": str(repeat),
+                    "days": ",".join(selected_days),
                     "audio_file": audio_file,
                 }
             )
@@ -208,7 +271,7 @@ def run_tui(*, state_path: Path | None = None) -> int:
 
         def on_mount(self) -> None:
             table = self.query_one("#alarms", DataTable)
-            table.add_columns("ID", "Time", "Status", "Label")
+            table.add_columns("ID", "Time", "Status", "Repeat", "Label")
             self.refresh_table()
             self.set_interval(1, self.refresh_table)
 
@@ -264,6 +327,8 @@ def run_tui(*, state_path: Path | None = None) -> int:
                     value=result["value"],
                     label=result["label"],
                     audio_file=audio_file,
+                    repeat=result["repeat"],
+                    days=tuple(day for day in result["days"].split(",") if day),
                     state_path=selected_state_path,
                 )
             except OSError as exc:

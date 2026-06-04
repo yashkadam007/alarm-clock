@@ -11,7 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .core import AlarmSpec
+from .core import (
+    AlarmSpec,
+    REPEAT_NONE,
+    REPEAT_WEEKDAYS,
+    normalize_repeat_days,
+    parse_repeat_mode,
+)
 
 
 STATE_ENV_VAR = "ALARM_CLOCK_STATE"
@@ -25,6 +31,8 @@ class StoredAlarm:
     label: str
     source: str
     pid: int
+    repeat: str = REPEAT_NONE
+    repeat_days: tuple[str, ...] = ()
 
 
 def default_state_path() -> Path:
@@ -46,6 +54,8 @@ def add_alarm(spec: AlarmSpec, *, state_path: Path | None = None) -> str:
             "label": spec.label,
             "source": spec.source,
             "pid": os.getpid(),
+            "repeat": spec.repeat,
+            "repeat_days": list(spec.repeat_days),
         }
     )
     _write_raw(path, alarms)
@@ -66,6 +76,30 @@ def mark_alarm_triggered(alarm_id: str, *, state_path: Path | None = None) -> No
             item = {**item, "status": "triggered", "pid": 0}
         alarms.append(item)
     _write_raw(path, alarms)
+
+
+def update_alarm_schedule(
+    alarm_id: str,
+    scheduled_for: datetime,
+    *,
+    state_path: Path | None = None,
+) -> bool:
+    """Update one pending alarm to its next scheduled occurrence."""
+    path = state_path or default_state_path()
+    alarms = []
+    updated = False
+    for item in _read_raw(path):
+        if item.get("id") == alarm_id:
+            item = {
+                **item,
+                "scheduled_for": scheduled_for.isoformat(),
+                "status": "pending",
+                "pid": os.getpid(),
+            }
+            updated = True
+        alarms.append(item)
+    _write_raw(path, alarms)
+    return updated
 
 
 def cancel_alarm(
@@ -180,6 +214,14 @@ def _parse_alarm(item: dict[str, Any]) -> StoredAlarm | None:
         label = str(raw_label)
         source = str(item["source"])
         pid = int(item.get("pid", 0))
+        repeat = parse_repeat_mode(str(item.get("repeat", REPEAT_NONE)))
+        if repeat == REPEAT_WEEKDAYS:
+            raw_days = item.get("repeat_days", [])
+            if not isinstance(raw_days, list):
+                return None
+            repeat_days = normalize_repeat_days([str(day) for day in raw_days])
+        else:
+            repeat_days = ()
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -190,6 +232,8 @@ def _parse_alarm(item: dict[str, Any]) -> StoredAlarm | None:
         label=label,
         source=source,
         pid=pid,
+        repeat=repeat,
+        repeat_days=repeat_days,
     )
 
 
@@ -201,6 +245,8 @@ def _serialize_alarm(alarm: StoredAlarm) -> dict[str, Any]:
         "label": alarm.label,
         "source": alarm.source,
         "pid": alarm.pid,
+        "repeat": alarm.repeat,
+        "repeat_days": list(alarm.repeat_days),
     }
 
 

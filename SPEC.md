@@ -15,6 +15,10 @@ that can be tested without waiting in real time.
 - Users can schedule an alarm for the next occurrence of a clock time:
   - Example: `python alarm.py at 07:30 --label "Wake up"`
   - If that time has already passed today, schedule it for tomorrow.
+- Users can schedule recurring clock-time alarms:
+  - Example: `python alarm.py at 07:30 --repeat daily`
+  - Example: `python alarm.py at 09:00 --repeat days --days mon,tue,wed,thu,fri`
+  - Recurring duration alarms are not supported.
 - Users can provide a custom label.
 - When the alarm fires, the CLI prints the label and rings the terminal bell
   unless `--no-bell` is supplied.
@@ -41,9 +45,10 @@ that can be tested without waiting in real time.
 
 ## Non-goals
 
-- No database, recurring alarms, or notifications.
+- No database or notifications.
 - No background daemon. The terminal process must remain running until the alarm
-  fires.
+  fires, and recurring alarms require that process to keep running between
+  occurrences.
 - No concurrent multiple-alarm scheduling.
 
 ## Design
@@ -53,12 +58,13 @@ The code is split into:
 - `alarm.py`: thin executable entry point.
 - `src/alarm_clock/core.py`: parsing and scheduling logic.
 - `src/alarm_clock/cli.py`: argument parsing, dry-run behavior, waiting loop,
-  terminal output, alarm cancellation, and audio-file playback through local
-  system support.
+  recurrence rescheduling, terminal output, alarm cancellation, and audio-file
+  playback through local system support.
 - `src/alarm_clock/tui.py`: Textual app and background alarm launching for
   interactive terminal use.
-- `src/alarm_clock/store.py`: JSON state for pending and triggered alarms so a
-  separate `list` command can report alarm status.
+- `src/alarm_clock/store.py`: JSON state for pending and triggered alarms,
+  including backward-compatible recurrence metadata, so a separate `list`
+  command can report alarm status.
 
 The core module is side-effect free and covered by unit tests. The CLI module
 accepts injectable clock and sleeper functions so tests can verify behavior
@@ -72,8 +78,10 @@ Linux if available. Playback failures produce a warning after the alarm fires.
 
 - Unit-test duration parsing for unit and colon formats.
 - Unit-test clock-time parsing and next-day rollover.
+- Unit-test recurrence parsing and next-occurrence scheduling.
 - Unit-test invalid inputs.
 - Unit-test CLI dry-run output and alarm triggering with fake time/sleep.
+- Unit-test recurring alarm rescheduling in the state store.
 - Unit-test audio-file validation and injected playback behavior.
 - Unit-test alarm table listing and triggered status after an alarm completes.
 - Unit-test turning off one pending alarm and all pending alarms.

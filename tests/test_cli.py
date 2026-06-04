@@ -42,6 +42,39 @@ class CliTests(unittest.TestCase):
         self.assertIn("Scheduled alarm for 2026-06-04 12:00:30", out.getvalue())
         self.assertIn("Stand up", out.getvalue())
 
+    def test_dry_run_prints_recurring_clock_alarm(self):
+        out = io.StringIO()
+        fake_now = lambda: datetime(2026, 6, 4, 12, 0, 0)
+
+        exit_code = main(
+            [
+                "at",
+                "09:00",
+                "--label",
+                "Standup",
+                "--repeat",
+                "days",
+                "--days",
+                "mon,tue,wed,thu,fri",
+                "--dry-run",
+            ],
+            now_provider=fake_now,
+            sleeper=lambda seconds: self.fail("dry-run should not sleep"),
+            stdout=out,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Scheduled alarm for 2026-06-05 09:00:00", out.getvalue())
+        self.assertIn("repeat mon,tue,wed,thu,fri", out.getvalue())
+
+    def test_repeat_days_requires_days_option(self):
+        err = io.StringIO()
+
+        exit_code = main(["at", "09:00", "--repeat", "days"], stderr=err)
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("--days is required with --repeat days", err.getvalue())
+
     def test_invalid_input_returns_error(self):
         out = io.StringIO()
         err = io.StringIO()
@@ -88,6 +121,55 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake.sleeps, [1.0, 1.0])
         self.assertIn("\a", out.getvalue())
         self.assertIn("ALARM: Wake up", out.getvalue())
+
+    def test_run_alarm_reschedules_recurring_alarm_in_store(self):
+        fake = FakeClock(datetime(2026, 6, 4, 7, 29, 58))
+        out = io.StringIO()
+        spec = AlarmSpec(
+            scheduled_for=datetime(2026, 6, 4, 7, 30, 0),
+            label="Wake up",
+            source="at 07:30",
+            repeat="daily",
+            clock_time=datetime(2026, 6, 4, 7, 30, 0).time(),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "alarms.json"
+            state_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "a1b2c3",
+                            "scheduled_for": "2026-06-04T07:30:00",
+                            "status": "pending",
+                            "label": "Wake up",
+                            "source": "at 07:30",
+                            "pid": 0,
+                            "repeat": "daily",
+                            "repeat_days": [],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            run_alarm(
+                spec,
+                now_provider=fake.now,
+                sleeper=fake.sleep,
+                stdout=out,
+                bell=False,
+                alarm_id="a1b2c3",
+                state_path=state_path,
+                max_fires=1,
+            )
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(fake.sleeps, [1.0, 1.0])
+        self.assertEqual(raw[0]["id"], "a1b2c3")
+        self.assertEqual(raw[0]["scheduled_for"], "2026-06-05T07:30:00")
+        self.assertEqual(raw[0]["status"], "pending")
+        self.assertIn("Rescheduled alarm for 2026-06-05 07:30:00", out.getvalue())
 
     def test_run_alarm_plays_audio_file_when_alarm_fires(self):
         fake = FakeClock(datetime(2026, 6, 4, 12, 0, 0))
@@ -274,9 +356,9 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         lines = out.getvalue().splitlines()
-        self.assertEqual(lines[0], "ID        Time              Status     Label")
-        self.assertIn("d4e5f6    2026-06-04 18:10  triggered  Tea break", lines)
-        self.assertIn("a1b2c3    2026-06-05 07:30  pending    Wake up", lines)
+        self.assertEqual(lines[0], "ID        Time              Status     Repeat       Label")
+        self.assertIn("d4e5f6    2026-06-04 18:10  triggered  none         Tea break", lines)
+        self.assertIn("a1b2c3    2026-06-05 07:30  pending    none         Wake up", lines)
 
     def test_off_removes_pending_alarm_by_id(self):
         out = io.StringIO()

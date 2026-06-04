@@ -31,6 +31,29 @@ class TuiHelperTests(unittest.TestCase):
             ],
         )
 
+    def test_build_alarm_command_adds_recurring_clock_options(self):
+        command = build_alarm_command(
+            mode="at",
+            value="09:00",
+            label="Standup",
+            repeat="weekdays",
+            days=("mon", "tue", "wed", "thu", "fri"),
+        )
+
+        self.assertEqual(
+            command[2:],
+            [
+                "at",
+                "09:00",
+                "--label",
+                "Standup",
+                "--repeat",
+                "days",
+                "--days",
+                "mon,tue,wed,thu,fri",
+            ],
+        )
+
     def test_alarm_table_rows_match_cli_list_shape(self):
         alarms = [
             StoredAlarm(
@@ -40,12 +63,13 @@ class TuiHelperTests(unittest.TestCase):
                 label="Wake up",
                 source="at 07:30",
                 pid=0,
+                repeat="daily",
             )
         ]
 
         self.assertEqual(
             alarm_table_rows(alarms),
-            [("a1b2c3", "2026-06-05 07:30", "pending", "Wake up")],
+            [("a1b2c3", "2026-06-05 07:30", "pending", "daily", "Wake up")],
         )
 
 

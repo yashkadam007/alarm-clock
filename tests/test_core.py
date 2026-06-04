@@ -7,8 +7,10 @@ from alarm_clock.core import (
     AlarmSpec,
     build_alarm_spec,
     next_alarm_time,
+    next_recurring_alarm_time,
     parse_clock_time,
     parse_duration,
+    parse_weekdays,
 )
 
 
@@ -52,6 +54,37 @@ class ClockTimeTests(unittest.TestCase):
         self.assertEqual(target, datetime(2026, 6, 5, 11, 59, 0))
 
 
+class RecurrenceTests(unittest.TestCase):
+    def test_parses_repeat_days(self):
+        self.assertEqual(parse_weekdays("friday,mon,tue"), ("mon", "tue", "fri"))
+        self.assertEqual(parse_weekdays("monday,mon"), ("mon",))
+
+    def test_rejects_invalid_repeat_days(self):
+        for value in ["", "mon,,tue", "funday"]:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_weekdays(value)
+
+    def test_daily_recurrence_uses_next_clock_time(self):
+        now = datetime(2026, 6, 4, 7, 30, 0)
+        target = next_recurring_alarm_time(
+            now,
+            time(hour=7, minute=30),
+            repeat="daily",
+        )
+        self.assertEqual(target, datetime(2026, 6, 5, 7, 30, 0))
+
+    def test_weekday_recurrence_skips_unselected_days(self):
+        now = datetime(2026, 6, 5, 10, 0, 0)
+        target = next_recurring_alarm_time(
+            now,
+            time(hour=9),
+            repeat="weekdays",
+            repeat_days=("mon", "wed"),
+        )
+        self.assertEqual(target, datetime(2026, 6, 8, 9, 0, 0))
+
+
 class AlarmSpecTests(unittest.TestCase):
     def test_builds_relative_alarm_spec(self):
         now = datetime(2026, 6, 4, 12, 0, 0)
@@ -71,6 +104,43 @@ class AlarmSpecTests(unittest.TestCase):
         self.assertEqual(spec.scheduled_for, datetime(2026, 6, 4, 12, 30, 0))
         self.assertEqual(spec.label, "Lunch")
         self.assertEqual(spec.source, "at 12:30")
+        self.assertEqual(spec.repeat, "none")
+
+    def test_builds_daily_clock_alarm_spec(self):
+        now = datetime(2026, 6, 4, 12, 0, 0)
+        spec = build_alarm_spec(
+            mode="at",
+            value="07:30",
+            label="Wake",
+            now=now,
+            repeat="daily",
+        )
+        self.assertEqual(spec.scheduled_for, datetime(2026, 6, 5, 7, 30, 0))
+        self.assertEqual(spec.repeat, "daily")
+
+    def test_builds_selected_days_clock_alarm_spec(self):
+        now = datetime(2026, 6, 4, 12, 0, 0)
+        spec = build_alarm_spec(
+            mode="at",
+            value="09:00",
+            label="Standup",
+            now=now,
+            repeat="days",
+            repeat_days=("fri", "mon"),
+        )
+        self.assertEqual(spec.scheduled_for, datetime(2026, 6, 5, 9, 0, 0))
+        self.assertEqual(spec.repeat, "weekdays")
+        self.assertEqual(spec.repeat_days, ("mon", "fri"))
+
+    def test_rejects_recurring_duration_alarm(self):
+        with self.assertRaises(ValueError):
+            build_alarm_spec(
+                mode="in",
+                value="10m",
+                label="Nope",
+                now=datetime(2026, 6, 4, 12, 0, 0),
+                repeat="daily",
+            )
 
     def test_rejects_unknown_mode(self):
         with self.assertRaises(ValueError):
