@@ -25,9 +25,15 @@ that can be tested without waiting in real time.
 - Users can list alarms with their ID, scheduled time, status, and label:
   - Example: `python alarm.py list`
   - Status values: `pending` and `triggered`.
+- Users can turn off upcoming alarms:
+  - Example: `python alarm.py off a1b2c3`
+  - Example: `python alarm.py off --all`
+  - Turning off an alarm removes it from the state file and stops its waiting
+    process when it is still running.
 - Users can open a Textual-powered TUI:
   - Example: `python alarm.py tui`
-  - The TUI lists alarms and supports adding new alarms.
+  - The TUI lists alarms and supports adding new alarms and turning off
+    upcoming alarms.
 - The CLI supports `--dry-run` so users and tests can validate a schedule
   without waiting.
 - Invalid durations or times produce clear errors and a non-zero exit status.
@@ -47,7 +53,8 @@ The code is split into:
 - `alarm.py`: thin executable entry point.
 - `src/alarm_clock/core.py`: parsing and scheduling logic.
 - `src/alarm_clock/cli.py`: argument parsing, dry-run behavior, waiting loop,
-  terminal output, and audio-file playback through local system support.
+  terminal output, alarm cancellation, and audio-file playback through local
+  system support.
 - `src/alarm_clock/tui.py`: Textual app and background alarm launching for
   interactive terminal use.
 - `src/alarm_clock/store.py`: JSON state for pending and triggered alarms so a
@@ -69,6 +76,7 @@ Linux if available. Playback failures produce a warning after the alarm fires.
 - Unit-test CLI dry-run output and alarm triggering with fake time/sleep.
 - Unit-test audio-file validation and injected playback behavior.
 - Unit-test alarm table listing and triggered status after an alarm completes.
+- Unit-test turning off one pending alarm and all pending alarms.
 - Unit-test TUI helper behavior and `tui` command dispatch without launching a
   real terminal UI.
 - Run a smoke check through `alarm.py --dry-run`.

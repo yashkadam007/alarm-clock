@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: alarm-clock
+Version: 0.1.0
+Summary: Terminal alarm clock with CLI and TUI modes.
+Requires-Python: >=3.11
+Requires-Dist: textual>=0.89

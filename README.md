@@ -11,6 +11,7 @@ Textual-powered TUI: no web UI, no React, and no database.
 - Ring the terminal bell unless disabled.
 - Play `assets/audio/alarm.mp3` when an alarm fires.
 - List alarms with their ID, time, status, and label.
+- Turn off upcoming alarms.
 - Open a terminal UI for viewing and adding alarms.
 - Validate schedules with `--dry-run` without waiting.
 
@@ -62,6 +63,18 @@ List alarms:
 python3 alarm.py list
 ```
 
+Turn off one upcoming alarm:
+
+```bash
+python3 alarm.py off a1b2c3
+```
+
+Turn off all upcoming alarms:
+
+```bash
+python3 alarm.py off --all
+```
+
 Open the TUI:
 
 ```bash
@@ -77,6 +90,7 @@ alarm tui
 The TUI supports:
 
 - `a`: add an alarm.
+- `o`: turn off upcoming alarms.
 - `r`: refresh the alarm list.
 - `q`: quit.
 
