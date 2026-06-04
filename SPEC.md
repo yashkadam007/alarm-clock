@@ -12,6 +12,9 @@ that can be tested without waiting in real time.
 - Users can create a reusable alarm for the next occurrence of a clock time:
   - Example: `python alarm.py add 07:30 --label "Wake up"`
   - If that time has already passed today, schedule it for tomorrow.
+  - `add` starts a detached Python worker, records its PID in the JSON state
+    file, and returns without waiting for the alarm time.
+  - `--foreground` keeps the legacy behavior of waiting in the current terminal.
 - Users can schedule recurring clock-time alarms:
   - Example: `python alarm.py add 07:30 --repeat daily`
   - Example: `python alarm.py add 09:00 --repeat days --days mon,tue,wed,thu,fri`
@@ -22,7 +25,7 @@ that can be tested without waiting in real time.
 - Alarms play `assets/audio/alarm.mp3` by default when they fire.
 - Users can provide an optional audio file override:
   - Example: `python alarm.py add 07:30 --audio-file ~/Music/alarm.wav`
-  - The file path is validated before the CLI starts waiting.
+  - The file path is validated before the worker starts.
 - Users can list alarms with their ID, scheduled time, status, and label:
   - Example: `python alarm.py list`
   - Status values: `on`, `off`, and `ringing`.
@@ -31,7 +34,7 @@ that can be tested without waiting in real time.
   - Example: `python alarm.py off a1b2c3`
   - Example: `python alarm.py off --all`
   - Turning off an alarm keeps it visible, marks it disabled, and stops its
-    waiting process when it is still running.
+    worker process when it is still running.
 - Users can open a Textual-powered TUI:
   - Example: `python alarm.py tui`
   - The TUI lists alarms and supports adding new alarms and turning off enabled
@@ -44,10 +47,9 @@ that can be tested without waiting in real time.
 ## Non-goals
 
 - No database or notifications.
-- No background daemon. The terminal process must remain running until the alarm
-  fires, and recurring alarms require that process to keep running between
-  occurrences.
-- No concurrent multiple-alarm scheduling.
+- No background daemon or OS scheduler integration. Alarms use ordinary
+  detached Python worker processes.
+- No reboot, logout, or machine-sleep recovery.
 
 ## Design
 
@@ -55,9 +57,10 @@ The code is split into:
 
 - `alarm.py`: thin executable entry point.
 - `src/alarm_clock/core.py`: parsing and scheduling logic.
-- `src/alarm_clock/cli.py`: argument parsing, dry-run behavior, waiting loop,
-  recurrence rescheduling, terminal output, alarm enable/disable actions, and
-  audio-file playback through local system support.
+- `src/alarm_clock/cli.py`: argument parsing, dry-run behavior, detached worker
+  launch, worker command dispatch, waiting loop, recurrence rescheduling,
+  terminal output, alarm enable/disable actions, and audio-file playback through
+  local system support.
 - `src/alarm_clock/tui.py`: Textual app and background alarm launching for
   interactive terminal use.
 - `src/alarm_clock/store.py`: JSON state for saved time-of-day alarms,
@@ -65,8 +68,13 @@ The code is split into:
   separate `list` command can report alarm status.
 
 The core module is side-effect free and covered by unit tests. The CLI module
-accepts injectable clock and sleeper functions so tests can verify behavior
-without real delays.
+accepts injectable clock, sleeper, and worker-launch functions so tests can
+verify behavior without real delays or real detached processes.
+
+Detached worker stdout and stderr are redirected to a log file beside the JSON
+state file with a `.log` suffix. The hidden `worker <alarm-id>` command reloads
+the persisted alarm record and tolerates missing, disabled, or already handled
+records.
 
 Audio playback uses standard-library process APIs and local system support:
 `afplay` on macOS, `winsound` on Windows, or `paplay`, `aplay`, or `ffplay` on
@@ -82,6 +90,8 @@ Linux if available. Playback failures produce a warning after the alarm fires.
 - Unit-test audio-file validation and injected playback behavior.
 - Unit-test alarm table listing and disabled status after an alarm completes.
 - Unit-test turning alarms on and off while keeping saved rows visible.
+- Unit-test non-blocking `add`, worker PID persistence, foreground
+  compatibility, and worker command dispatch.
 - Unit-test TUI helper behavior and `tui` command dispatch without launching a
   real terminal UI.
 - Run a smoke check through `alarm.py --dry-run`.

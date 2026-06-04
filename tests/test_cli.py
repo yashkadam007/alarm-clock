@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import _path  # noqa: F401
 
-from alarm_clock.cli import DEFAULT_AUDIO_FILE, main, run_alarm
+from alarm_clock.cli import DEFAULT_AUDIO_FILE, _worker_command, main, run_alarm
 from alarm_clock.core import AlarmSpec
 from alarm_clock.store import update_alarm_schedule
 
@@ -299,7 +299,7 @@ class CliTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             exit_code = main(
-                ["add", "12:00:01", "--no-bell"],
+                ["add", "12:00:01", "--no-bell", "--foreground"],
                 now_provider=fake.now,
                 sleeper=fake.sleep,
                 stdout=out,
@@ -318,7 +318,7 @@ class CliTests(unittest.TestCase):
             state_path = Path(temp_dir) / "alarms.json"
             with patch("alarm_clock.cli.run_alarm", side_effect=KeyboardInterrupt):
                 exit_code = main(
-                    ["add", "12:00:01"],
+                    ["add", "12:00:01", "--foreground"],
                     stdout=out,
                     stderr=err,
                     state_path=state_path,
@@ -506,7 +506,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "alarms.json"
             exit_code = main(
-                ["add", "12:00:02", "--label", "Done", "--no-bell"],
+                [
+                    "add",
+                    "12:00:02",
+                    "--label",
+                    "Done",
+                    "--no-bell",
+                    "--foreground",
+                ],
                 now_provider=fake.now,
                 sleeper=fake.sleep,
                 stdout=out,
@@ -572,6 +579,7 @@ class CliTests(unittest.TestCase):
                         "--alarm-id",
                         "a1b2c3",
                         "--no-bell",
+                        "--foreground",
                     ],
                     now_provider=fake.now,
                     sleeper=fake.sleep,
@@ -586,6 +594,112 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raw[0]["scheduled_for"], "2026-06-05T07:30:00")
         self.assertEqual(raw[0]["status"], "pending")
         self.assertEqual(raw[0]["repeat"], "daily")
+
+    def test_add_launches_worker_and_returns_without_waiting(self):
+        out = io.StringIO()
+        fake_now = lambda: datetime(2026, 6, 4, 12, 0, 0)
+        launched = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "alarms.json"
+            exit_code = main(
+                ["add", "12:30", "--label", "Tea"],
+                now_provider=fake_now,
+                sleeper=lambda seconds: self.fail("add should not sleep"),
+                stdout=out,
+                state_path=state_path,
+                worker_launcher=lambda alarm_id: launched.append(alarm_id) or 4321,
+            )
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(raw[0]["id"], launched[0])
+        self.assertEqual(raw[0]["pid"], 4321)
+        self.assertEqual(raw[0]["audio_file"], str(DEFAULT_AUDIO_FILE))
+        self.assertIn("Scheduled alarm for 2026-06-04 12:30:00", out.getvalue())
+
+    def test_worker_command_runs_stored_alarm(self):
+        fake = FakeClock(datetime(2026, 6, 4, 12, 0, 0))
+        out = io.StringIO()
+        played = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "alarms.json"
+            audio_path = Path(temp_dir) / "alarm.wav"
+            audio_path.write_bytes(b"not-real-audio")
+            state_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "a1b2c3",
+                            "scheduled_for": "2026-06-04T12:00:01",
+                            "status": "pending",
+                            "label": "Tea",
+                            "source": "add 12:00:01",
+                            "pid": 0,
+                            "enabled": True,
+                            "audio_file": str(audio_path),
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                ["worker", "a1b2c3", "--no-bell"],
+                now_provider=fake.now,
+                sleeper=fake.sleep,
+                stdout=out,
+                state_path=state_path,
+                audio_player=played.append,
+            )
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fake.sleeps, [1.0])
+        self.assertEqual(played, [audio_path])
+        self.assertEqual(raw[0]["status"], "triggered")
+        self.assertFalse(raw[0]["enabled"])
+        self.assertIn("ALARM: Tea", out.getvalue())
+
+    def test_worker_command_ignores_missing_or_disabled_alarm(self):
+        out = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "alarms.json"
+            state_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "a1b2c3",
+                            "scheduled_for": "2026-06-04T12:00:01",
+                            "status": "pending",
+                            "label": "Tea",
+                            "source": "add 12:00:01",
+                            "pid": 0,
+                            "enabled": False,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                ["worker", "a1b2c3"],
+                now_provider=lambda: datetime(2026, 6, 4, 12, 0, 0),
+                sleeper=lambda seconds: self.fail("disabled worker should not sleep"),
+                stdout=out,
+                state_path=state_path,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_worker_command_builder_can_disable_bell(self):
+        command = _worker_command("a1b2c3", no_bell=True)
+
+        self.assertEqual(command[-3:], ["worker", "a1b2c3", "--no-bell"])
 
 
 if __name__ == "__main__":

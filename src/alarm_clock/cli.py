@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -21,15 +22,19 @@ from .core import (
     parse_weekdays,
 )
 from .store import (
+    STATE_ENV_VAR,
     add_alarm,
+    default_state_path,
     disable_alarm,
     disable_enabled_alarms,
     enable_alarm,
+    get_alarm,
     list_alarms,
     mark_alarm_ringing,
     mark_alarm_triggered,
     remove_alarm,
     stop_ringing_alarm,
+    update_alarm_pid,
     update_alarm_schedule,
 )
 
@@ -64,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--days",
         help="Comma-separated repeat days for --repeat days, such as mon,tue,friday.",
     )
+    add_parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Wait in the current terminal until the alarm fires.",
+    )
 
     subparsers.add_parser("list", help="List alarms.")
 
@@ -88,6 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("tui", help="Open the terminal UI.")
+
+    worker_parser = subparsers.add_parser("worker", help=argparse.SUPPRESS)
+    worker_parser.add_argument("alarm_id", help=argparse.SUPPRESS)
+    worker_parser.add_argument(
+        "--no-bell",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -297,6 +315,55 @@ def validate_audio_file(path: Path | None) -> Path:
     return resolved
 
 
+def worker_log_path(*, state_path: Path | None = None) -> Path:
+    selected_state_path = state_path or default_state_path()
+    return selected_state_path.with_suffix(selected_state_path.suffix + ".log")
+
+
+def launch_detached_worker(
+    alarm_id: str,
+    *,
+    state_path: Path | None = None,
+    no_bell: bool = False,
+) -> int:
+    log_path = worker_log_path(state_path=state_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = _worker_command(alarm_id, no_bell=no_bell)
+    env = os.environ.copy()
+    if state_path is not None:
+        env[STATE_ENV_VAR] = str(state_path)
+
+    popen_kwargs: dict[str, object] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+        "env": env,
+    }
+    if sys.platform.startswith("win"):
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    with log_path.open("ab") as log_file:
+        popen_kwargs["stdout"] = log_file
+        popen_kwargs["stderr"] = log_file
+        process = subprocess.Popen(command, **popen_kwargs)
+    return process.pid
+
+
+def _worker_command(alarm_id: str, *, no_bell: bool = False) -> list[str]:
+    entrypoint = Path(sys.argv[0]).resolve()
+    if not entrypoint.exists():
+        entrypoint = Path(__file__).resolve().parents[2] / "alarm.py"
+    command = [sys.executable, str(entrypoint), "worker", alarm_id]
+    if no_bell:
+        command.append("--no-bell")
+    return command
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -306,6 +373,8 @@ def main(
     stderr: TextIO = sys.stderr,
     state_path: Path | None = None,
     audio_player: Callable[[Path], None] = play_audio_file,
+    worker_launcher: Callable[[str], int] | None = None,
+    max_fires: int | None = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -346,6 +415,19 @@ def main(
         )
         return 0
 
+    if args.command == "worker":
+        return _run_worker_command(
+            args.alarm_id,
+            now_provider=now_provider,
+            sleeper=sleeper,
+            stdout=stdout,
+            stderr=stderr,
+            state_path=state_path,
+            audio_player=audio_player,
+            bell=not args.no_bell,
+            max_fires=max_fires,
+        )
+
     if args.command == "on":
         enabled_alarm = enable_alarm(
             args.alarm_id,
@@ -360,34 +442,27 @@ def main(
             scheduled_for=enabled_alarm.scheduled_for,
             label=enabled_alarm.label,
             source=enabled_alarm.source,
-            audio_file=DEFAULT_AUDIO_FILE,
+            audio_file=enabled_alarm.audio_file or DEFAULT_AUDIO_FILE,
             repeat=enabled_alarm.repeat,
             repeat_days=enabled_alarm.repeat_days,
             clock_time=enabled_alarm.clock_time,
             enabled=True,
         )
         try:
-            run_alarm(
-                spec,
-                now_provider=now_provider,
-                sleeper=sleeper,
-                stdout=stdout,
-                stderr=stderr,
-                bell=not args.no_bell,
-                audio_player=audio_player,
-                alarm_id=enabled_alarm.alarm_id,
+            _launch_and_record_worker(
+                enabled_alarm.alarm_id,
                 state_path=state_path,
+                launcher=worker_launcher,
+                no_bell=args.no_bell,
             )
-        except KeyboardInterrupt:
-            disable_alarm(enabled_alarm.alarm_id, now=now_provider(), state_path=state_path)
-            print("\nAlarm cancelled", file=stderr)
-            return 130
-        return _finish_completed_alarm(
+        except OSError as exc:
+            print(f"Error: Could not start alarm worker: {exc}", file=stderr)
+            return 2
+        _print_scheduled_alarm(
             spec,
-            enabled_alarm.alarm_id,
-            now_provider=now_provider,
-            state_path=state_path,
+            stdout=stdout,
         )
+        return 0
 
     if args.command == "tui":
         try:
@@ -421,11 +496,7 @@ def main(
         return 2
 
     if args.dry_run:
-        print(
-            f"Scheduled alarm for {format_datetime(spec.scheduled_for)} "
-            f"({spec.source}{format_repeat_suffix(spec)}): {spec.label}",
-            file=stdout,
-        )
+        _print_scheduled_alarm(spec, stdout=stdout)
         return 0
 
     created_alarm = args.alarm_id is None
@@ -448,6 +519,23 @@ def main(
                 clock_time=existing_alarm.clock_time or spec.clock_time,
             )
         update_alarm_schedule(alarm_id, spec.scheduled_for, state_path=state_path)
+    if not args.foreground:
+        try:
+            _launch_and_record_worker(
+                alarm_id,
+                state_path=state_path,
+                launcher=worker_launcher,
+                no_bell=args.no_bell,
+            )
+        except OSError as exc:
+            if created_alarm:
+                remove_alarm(alarm_id, state_path=state_path)
+            print(f"Error: Could not start alarm worker: {exc}", file=stderr)
+            return 2
+        _print_scheduled_alarm(spec, stdout=stdout)
+        return 0
+
+    update_alarm_pid(alarm_id, os.getpid(), state_path=state_path)
     try:
         run_alarm(
             spec,
@@ -459,6 +547,7 @@ def main(
             audio_player=audio_player,
             alarm_id=alarm_id,
             state_path=state_path,
+            max_fires=max_fires,
         )
     except KeyboardInterrupt:
         if created_alarm:
@@ -475,6 +564,80 @@ def main(
         )
 
     return 0
+
+
+def _launch_and_record_worker(
+    alarm_id: str,
+    *,
+    state_path: Path | None,
+    launcher: Callable[[str], int] | None,
+    no_bell: bool = False,
+) -> int:
+    selected_launcher = launcher or (
+        lambda selected_alarm_id: launch_detached_worker(
+            selected_alarm_id,
+            state_path=state_path,
+            no_bell=no_bell,
+        )
+    )
+    pid = selected_launcher(alarm_id)
+    update_alarm_pid(alarm_id, pid, state_path=state_path)
+    return pid
+
+
+def _print_scheduled_alarm(spec: AlarmSpec, *, stdout: TextIO) -> None:
+    print(
+        f"Scheduled alarm for {format_datetime(spec.scheduled_for)} "
+        f"({spec.source}{format_repeat_suffix(spec)}): {spec.label}",
+        file=stdout,
+    )
+
+
+def _run_worker_command(
+    alarm_id: str,
+    *,
+    now_provider: Callable[[], datetime],
+    sleeper: Callable[[float], None],
+    stdout: TextIO,
+    stderr: TextIO,
+    state_path: Path | None,
+    audio_player: Callable[[Path], None],
+    bell: bool,
+    max_fires: int | None,
+) -> int:
+    alarm = get_alarm(alarm_id, state_path=state_path)
+    if alarm is None or not alarm.enabled or alarm.status != "pending":
+        return 0
+
+    spec = AlarmSpec(
+        scheduled_for=alarm.scheduled_for,
+        label=alarm.label,
+        source=alarm.source,
+        audio_file=alarm.audio_file or DEFAULT_AUDIO_FILE,
+        repeat=alarm.repeat,
+        repeat_days=alarm.repeat_days,
+        clock_time=alarm.clock_time,
+        enabled=alarm.enabled,
+    )
+    update_alarm_pid(alarm_id, os.getpid(), state_path=state_path)
+    run_alarm(
+        spec,
+        now_provider=now_provider,
+        sleeper=sleeper,
+        stdout=stdout,
+        stderr=stderr,
+        bell=bell,
+        audio_player=audio_player,
+        alarm_id=alarm_id,
+        state_path=state_path,
+        max_fires=max_fires,
+    )
+    return _finish_completed_alarm(
+        spec,
+        alarm_id,
+        now_provider=now_provider,
+        state_path=state_path,
+    )
 
 
 def _finish_completed_alarm(

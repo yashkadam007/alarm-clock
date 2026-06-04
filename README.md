@@ -6,6 +6,7 @@ Textual-powered TUI: no web UI, no React, and no database.
 ## What It Does
 
 - Create reusable alarms at local clock times.
+- Keep alarms active in detached background worker processes after `add` returns.
 - Schedule recurring clock-time alarms daily or on selected weekdays.
 - Turn saved alarms on or off without deleting them.
 - Print a custom alarm label.
@@ -32,6 +33,16 @@ Add an alarm at a clock time:
 
 ```bash
 python3 alarm.py add 07:30 --label "Wake up"
+```
+
+`add` saves the alarm, starts a detached Python worker, records that worker PID,
+and returns control to the shell immediately. The machine must remain running
+for the alarm to fire; alarms are not restored automatically after reboot.
+
+Wait in the current terminal for troubleshooting:
+
+```bash
+python3 alarm.py add 07:30 --label "Wake up" --foreground
 ```
 
 Run a daily recurring alarm at a clock time:
@@ -133,11 +144,13 @@ each trigger. One-time alarms disable themselves after ringing.
 ## Audio Playback
 
 Alarms play `assets/audio/alarm.mp3` by default. Use `--audio-file` to override
-it for a specific alarm. Audio files are validated before waiting.
+it for a specific alarm. Audio files are validated before the worker starts.
 
 Playback uses local system support: `afplay` on macOS, `winsound` on Windows,
 or `paplay`, `aplay`, or `ffplay` on Linux if available. If playback fails, the
 alarm still prints its label and reports a warning.
+
+Detached worker output is written beside the state file with a `.log` suffix.
 
 ## Tests
 

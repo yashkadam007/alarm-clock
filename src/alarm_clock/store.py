@@ -41,6 +41,7 @@ class StoredAlarm:
     repeat_days: tuple[str, ...] = ()
     clock_time: time | None = None
     enabled: bool = True
+    audio_file: Path | None = None
 
 
 def default_state_path() -> Path:
@@ -61,15 +62,47 @@ def add_alarm(spec: AlarmSpec, *, state_path: Path | None = None) -> str:
             "status": "pending",
             "label": spec.label,
             "source": spec.source,
-            "pid": os.getpid(),
+            "pid": 0,
             "repeat": spec.repeat,
             "repeat_days": list(spec.repeat_days),
             "clock_time": spec.clock_time.isoformat() if spec.clock_time else None,
             "enabled": spec.enabled,
+            "audio_file": str(spec.audio_file) if spec.audio_file else None,
         }
     )
     _write_raw(path, alarms)
     return alarm_id
+
+
+def get_alarm(
+    alarm_id: str,
+    *,
+    state_path: Path | None = None,
+) -> StoredAlarm | None:
+    path = state_path or default_state_path()
+    for item in _read_raw(path):
+        if item.get("id") != alarm_id:
+            continue
+        return _parse_alarm(item)
+    return None
+
+
+def update_alarm_pid(
+    alarm_id: str,
+    pid: int,
+    *,
+    state_path: Path | None = None,
+) -> bool:
+    path = state_path or default_state_path()
+    alarms = []
+    updated = False
+    for item in _read_raw(path):
+        if item.get("id") == alarm_id:
+            item = {**item, "pid": pid}
+            updated = True
+        alarms.append(item)
+    _write_raw(path, alarms)
+    return updated
 
 
 def remove_alarm(alarm_id: str, *, state_path: Path | None = None) -> None:
@@ -297,7 +330,7 @@ def enable_alarm(
         selected,
         scheduled_for=scheduled_for,
         status=STATUS_PENDING,
-        pid=os.getpid(),
+        pid=0,
         clock_time=clock_time,
         enabled=True,
     )
@@ -390,6 +423,8 @@ def _parse_alarm(item: dict[str, Any]) -> StoredAlarm | None:
             enabled = raw_enabled
         else:
             enabled = status in {STATUS_PENDING, STATUS_RINGING}
+        raw_audio_file = item.get("audio_file")
+        audio_file = Path(str(raw_audio_file)) if raw_audio_file else None
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -404,6 +439,7 @@ def _parse_alarm(item: dict[str, Any]) -> StoredAlarm | None:
         repeat_days=repeat_days,
         clock_time=clock_time,
         enabled=enabled,
+        audio_file=audio_file,
     )
 
 
@@ -419,6 +455,7 @@ def _serialize_alarm(alarm: StoredAlarm) -> dict[str, Any]:
         "repeat_days": list(alarm.repeat_days),
         "clock_time": alarm.clock_time.isoformat() if alarm.clock_time else None,
         "enabled": alarm.enabled,
+        "audio_file": str(alarm.audio_file) if alarm.audio_file else None,
     }
 
 
