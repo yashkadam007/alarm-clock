@@ -46,6 +46,7 @@ class AlarmSpec:
     repeat: str = REPEAT_NONE
     repeat_days: tuple[str, ...] = ()
     clock_time: time | None = None
+    enabled: bool = True
 
 
 def parse_duration(value: str) -> timedelta:
@@ -219,11 +220,7 @@ def build_alarm_spec(
     normalized_days: tuple[str, ...] = ()
     clock_time: time | None = None
 
-    if mode == "in":
-        if normalized_repeat != REPEAT_NONE or repeat_days:
-            raise ValueError("Recurring alarms require the 'at' command")
-        scheduled_for = now + parse_duration(value)
-    elif mode == "at":
+    if mode in {"add", "at"}:
         clock_time = parse_clock_time(value)
         if normalized_repeat == REPEAT_WEEKDAYS:
             normalized_days = normalize_repeat_days(repeat_days)
@@ -241,13 +238,15 @@ def build_alarm_spec(
             if repeat_days:
                 raise ValueError("--days can only be used with --repeat days")
             scheduled_for = next_alarm_time(now, clock_time)
+    elif mode == "in":
+        raise ValueError("Duration-based alarms are not supported; use a timer")
     else:
         raise ValueError(f"Unsupported alarm mode: {mode}")
 
     return AlarmSpec(
         scheduled_for=scheduled_for,
         label=label,
-        source=f"{mode} {value}",
+        source=f"add {value}",
         audio_file=audio_file,
         repeat=normalized_repeat,
         repeat_days=normalized_days,

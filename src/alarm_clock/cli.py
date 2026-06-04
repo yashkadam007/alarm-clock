@@ -22,11 +22,14 @@ from .core import (
 )
 from .store import (
     add_alarm,
-    cancel_alarm,
-    cancel_pending_alarms,
+    disable_alarm,
+    disable_enabled_alarms,
+    enable_alarm,
     list_alarms,
+    mark_alarm_ringing,
     mark_alarm_triggered,
     remove_alarm,
+    stop_ringing_alarm,
     update_alarm_schedule,
 )
 
@@ -43,46 +46,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    in_parser = subparsers.add_parser(
-        "in",
-        help="Schedule an alarm after a relative duration.",
+    add_parser = subparsers.add_parser(
+        "add",
+        help="Create an alarm for a local clock time.",
     )
     _add_schedule_arguments(
-        in_parser,
-        value_help="Duration such as 10m, 1h30m, 01:30, or 01:02:03.",
-    )
-
-    at_parser = subparsers.add_parser(
-        "at",
-        help="Schedule an alarm at the next occurrence of a clock time.",
-    )
-    _add_schedule_arguments(
-        at_parser,
+        add_parser,
         value_help="Clock time such as 07:30 or 23:59:58.",
     )
-    at_parser.add_argument(
+    add_parser.add_argument(
         "--repeat",
         choices=["none", "daily", "days"],
         default=REPEAT_NONE,
         help="Repeat at this clock time: none, daily, or selected days.",
     )
-    at_parser.add_argument(
+    add_parser.add_argument(
         "--days",
         help="Comma-separated repeat days for --repeat days, such as mon,tue,friday.",
     )
 
     subparsers.add_parser("list", help="List alarms.")
 
+    on_parser = subparsers.add_parser("on", help="Turn on a saved alarm.")
+    on_parser.add_argument("alarm_id", help="Alarm ID to turn on.")
+    on_parser.add_argument(
+        "--no-bell",
+        action="store_true",
+        help="Do not ring the terminal bell when the alarm fires.",
+    )
+
     off_parser = subparsers.add_parser(
         "off",
-        help="Turn off upcoming alarms.",
+        help="Turn off saved alarms.",
     )
     off_target = off_parser.add_mutually_exclusive_group(required=True)
-    off_target.add_argument("alarm_id", nargs="?", help="Pending alarm ID to turn off.")
+    off_target.add_argument("alarm_id", nargs="?", help="Alarm ID to turn off.")
     off_target.add_argument(
         "--all",
         action="store_true",
-        help="Turn off all pending alarms.",
+        help="Turn off all enabled alarms.",
     )
 
     subparsers.add_parser("tui", help="Open the terminal UI.")
@@ -115,6 +117,10 @@ def _add_schedule_arguments(parser: argparse.ArgumentParser, *, value_help: str)
             "Audio file to play when the alarm fires. "
             f"Defaults to {DEFAULT_AUDIO_FILE_NAME}."
         ),
+    )
+    parser.add_argument(
+        "--alarm-id",
+        help=argparse.SUPPRESS,
     )
 
 
@@ -186,6 +192,9 @@ def run_alarm(
             if remaining <= 0:
                 break
             sleeper(min(1.0, remaining))
+
+        if alarm_id is not None:
+            mark_alarm_ringing(alarm_id, state_path=state_path)
 
         prefix = "\a" if bell else ""
         print(f"{prefix}ALARM: {current_spec.label}", file=stdout)
@@ -267,11 +276,17 @@ def print_alarm_list(
         print(
             f"{alarm.alarm_id:<8}  "
             f"{format_list_datetime(alarm.scheduled_for):<16}  "
-            f"{alarm.status:<9}  "
+            f"{format_alarm_status(alarm.status, alarm.enabled):<9}  "
             f"{format_repeat(alarm.repeat, alarm.repeat_days):<11}  "
             f"{alarm.label}",
             file=stdout,
         )
+
+
+def format_alarm_status(status: str, enabled: bool) -> str:
+    if status == "ringing":
+        return "ringing"
+    return "on" if enabled else "off"
 
 
 def validate_audio_file(path: Path | None) -> Path:
@@ -303,16 +318,16 @@ def main(
         now = now_provider()
         try:
             if args.all:
-                canceled = cancel_pending_alarms(now=now, state_path=state_path)
+                canceled = disable_enabled_alarms(now=now, state_path=state_path)
                 if not canceled:
-                    print("No upcoming alarms to turn off.", file=stdout)
+                    print("No enabled alarms to turn off.", file=stdout)
                     return 1
                 count = len(canceled)
                 noun = "alarm" if count == 1 else "alarms"
-                print(f"Turned off {count} upcoming {noun}.", file=stdout)
+                print(f"Turned off {count} {noun}.", file=stdout)
                 return 0
 
-            canceled_alarm = cancel_alarm(
+            canceled_alarm = disable_alarm(
                 args.alarm_id,
                 now=now,
                 state_path=state_path,
@@ -322,7 +337,7 @@ def main(
             return 2
 
         if canceled_alarm is None:
-            print(f"No pending alarm found with ID: {args.alarm_id}", file=stderr)
+            print(f"No enabled alarm found with ID: {args.alarm_id}", file=stderr)
             return 1
 
         print(
@@ -330,6 +345,49 @@ def main(
             file=stdout,
         )
         return 0
+
+    if args.command == "on":
+        enabled_alarm = enable_alarm(
+            args.alarm_id,
+            now=now_provider(),
+            state_path=state_path,
+        )
+        if enabled_alarm is None:
+            print(f"No alarm found with ID: {args.alarm_id}", file=stderr)
+            return 1
+
+        spec = AlarmSpec(
+            scheduled_for=enabled_alarm.scheduled_for,
+            label=enabled_alarm.label,
+            source=enabled_alarm.source,
+            audio_file=DEFAULT_AUDIO_FILE,
+            repeat=enabled_alarm.repeat,
+            repeat_days=enabled_alarm.repeat_days,
+            clock_time=enabled_alarm.clock_time,
+            enabled=True,
+        )
+        try:
+            run_alarm(
+                spec,
+                now_provider=now_provider,
+                sleeper=sleeper,
+                stdout=stdout,
+                stderr=stderr,
+                bell=not args.no_bell,
+                audio_player=audio_player,
+                alarm_id=enabled_alarm.alarm_id,
+                state_path=state_path,
+            )
+        except KeyboardInterrupt:
+            disable_alarm(enabled_alarm.alarm_id, now=now_provider(), state_path=state_path)
+            print("\nAlarm cancelled", file=stderr)
+            return 130
+        return _finish_completed_alarm(
+            spec,
+            enabled_alarm.alarm_id,
+            now_provider=now_provider,
+            state_path=state_path,
+        )
 
     if args.command == "tui":
         try:
@@ -370,7 +428,26 @@ def main(
         )
         return 0
 
-    alarm_id = add_alarm(spec, state_path=state_path)
+    created_alarm = args.alarm_id is None
+    alarm_id = args.alarm_id or add_alarm(spec, state_path=state_path)
+    if not created_alarm:
+        existing_alarm = next(
+            (
+                alarm
+                for alarm in list_alarms(now=now_provider(), state_path=state_path)
+                if alarm.alarm_id == alarm_id
+            ),
+            None,
+        )
+        if existing_alarm is not None:
+            spec = replace(
+                spec,
+                label=existing_alarm.label,
+                repeat=existing_alarm.repeat,
+                repeat_days=existing_alarm.repeat_days,
+                clock_time=existing_alarm.clock_time or spec.clock_time,
+            )
+        update_alarm_schedule(alarm_id, spec.scheduled_for, state_path=state_path)
     try:
         run_alarm(
             spec,
@@ -384,11 +461,36 @@ def main(
             state_path=state_path,
         )
     except KeyboardInterrupt:
-        remove_alarm(alarm_id, state_path=state_path)
+        if created_alarm:
+            remove_alarm(alarm_id, state_path=state_path)
         print("\nAlarm cancelled", file=stderr)
         return 130
 
     if spec.repeat == REPEAT_NONE:
-        mark_alarm_triggered(alarm_id, state_path=state_path)
+        return _finish_completed_alarm(
+            spec,
+            alarm_id,
+            now_provider=now_provider,
+            state_path=state_path,
+        )
 
+    return 0
+
+
+def _finish_completed_alarm(
+    spec: AlarmSpec,
+    alarm_id: str,
+    *,
+    now_provider: Callable[[], datetime],
+    state_path: Path | None,
+) -> int:
+    if spec.repeat == REPEAT_NONE:
+        completed = stop_ringing_alarm(
+            alarm_id,
+            now=now_provider(),
+            state_path=state_path,
+            terminator=lambda _pid: None,
+        )
+        if completed is None:
+            mark_alarm_triggered(alarm_id, state_path=state_path)
     return 0

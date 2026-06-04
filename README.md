@@ -5,14 +5,14 @@ Textual-powered TUI: no web UI, no React, and no database.
 
 ## What It Does
 
-- Schedule an alarm after a duration.
-- Schedule an alarm at the next occurrence of a clock time.
+- Create reusable alarms at local clock times.
 - Schedule recurring clock-time alarms daily or on selected weekdays.
+- Turn saved alarms on or off without deleting them.
 - Print a custom alarm label.
 - Ring the terminal bell unless disabled.
 - Play `assets/audio/alarm.mp3` when an alarm fires.
 - List alarms with their ID, time, status, and label.
-- Turn off upcoming alarms.
+- Turn off enabled alarms.
 - Open a terminal UI for viewing and adding alarms.
 - Validate schedules with `--dry-run` without waiting.
 
@@ -28,46 +28,40 @@ source .venv/bin/activate
 python3 -m pip install -e .
 ```
 
-Run an alarm after a duration:
+Add an alarm at a clock time:
 
 ```bash
-python3 alarm.py in 10m --label "Take a break"
-```
-
-Run an alarm at a clock time:
-
-```bash
-python3 alarm.py at 07:30 --label "Wake up"
+python3 alarm.py add 07:30 --label "Wake up"
 ```
 
 Run a daily recurring alarm at a clock time:
 
 ```bash
-python3 alarm.py at 07:30 --label "Wake up" --repeat daily
+python3 alarm.py add 07:30 --label "Wake up" --repeat daily
 ```
 
 Run a recurring alarm on selected weekdays:
 
 ```bash
-python3 alarm.py at 09:00 --label "Standup" --repeat days --days mon,tue,wed,thu,fri
+python3 alarm.py add 09:00 --label "Standup" --repeat days --days mon,tue,wed,thu,fri
 ```
 
 Preview the schedule without waiting:
 
 ```bash
-python3 alarm.py in 30s --label "Stand up" --dry-run
+python3 alarm.py add 18:00 --label "Stand up" --dry-run
 ```
 
 Disable the terminal bell:
 
 ```bash
-python3 alarm.py in 5m --label "Quiet reminder" --no-bell
+python3 alarm.py add 18:00 --label "Quiet reminder" --no-bell
 ```
 
 Override the default audio file:
 
 ```bash
-python3 alarm.py in 10m --label "Wake up" --audio-file ~/Music/alarm.wav
+python3 alarm.py add 07:30 --label "Wake up" --audio-file ~/Music/alarm.wav
 ```
 
 List alarms:
@@ -76,13 +70,19 @@ List alarms:
 python3 alarm.py list
 ```
 
-Turn off one upcoming alarm:
+Turn on a saved alarm:
+
+```bash
+python3 alarm.py on a1b2c3
+```
+
+Turn off one enabled alarm:
 
 ```bash
 python3 alarm.py off a1b2c3
 ```
 
-Turn off all upcoming alarms:
+Turn off all enabled alarms:
 
 ```bash
 python3 alarm.py off --all
@@ -103,45 +103,32 @@ alarm tui
 The TUI supports:
 
 - `a`: add an alarm.
-- `o`: turn off upcoming alarms.
+- `o`: turn off enabled alarms.
 - `r`: refresh the alarm list.
 - `q`: quit.
 
-`list` prints a table of pending and triggered alarms:
+`list` prints a table of saved alarms:
 
 ```text
 ID        Time              Status     Repeat       Label
-a1b2c3    2026-06-05 07:30  pending    daily        Wake up
-d4e5f6    2026-06-04 18:10  triggered  none         Tea break
+a1b2c3    2026-06-05 07:30  on         daily        Wake up
+d4e5f6    2026-06-04 18:10  off        none         Tea break
 ```
 
-Cancelled, expired, or stopped pending alarm processes are removed from the
-list.
+Turned-off alarms remain visible and can be enabled again with `on`.
 
 ## Accepted Formats
-
-Durations:
-
-- `10s`
-- `5m`
-- `2h`
-- `1h30m`
-- `01:30` for 1 minute, 30 seconds
-- `01:02:03` for 1 hour, 2 minutes, 3 seconds
 
 Clock times:
 
 - `07:30`
 - `23:59:58`
 
-If an `at` time has already passed today, the alarm is scheduled for tomorrow.
-Recurring alarms are only supported for `at` clock-time alarms. Selected days
-accept short or full day names, such as `mon,wednesday,friday`.
+If an `add` time has already passed today, the alarm is scheduled for tomorrow.
+Selected days accept short or full day names, such as `mon,wednesday,friday`.
 
-Recurring alarms keep one pending alarm ID and reschedule the same state record
-after each trigger. They depend on the alarm process staying alive; stopped
-processes are cleaned from the list under the same rules as one-time pending
-alarms.
+Recurring alarms keep one alarm ID and reschedule the same state record after
+each trigger. One-time alarms disable themselves after ringing.
 
 ## Audio Playback
 

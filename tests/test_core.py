@@ -86,30 +86,29 @@ class RecurrenceTests(unittest.TestCase):
 
 
 class AlarmSpecTests(unittest.TestCase):
-    def test_builds_relative_alarm_spec(self):
-        now = datetime(2026, 6, 4, 12, 0, 0)
-        spec = build_alarm_spec(mode="in", value="90s", label="Tea", now=now)
-        self.assertEqual(
-            spec,
-            AlarmSpec(
-                scheduled_for=datetime(2026, 6, 4, 12, 1, 30),
+    def test_rejects_duration_alarm_spec(self):
+        with self.assertRaises(ValueError):
+            build_alarm_spec(
+                mode="in",
+                value="90s",
                 label="Tea",
-                source="in 90s",
-            ),
-        )
+                now=datetime(2026, 6, 4, 12, 0, 0),
+            )
 
     def test_builds_clock_alarm_spec(self):
         now = datetime(2026, 6, 4, 12, 0, 0)
-        spec = build_alarm_spec(mode="at", value="12:30", label="Lunch", now=now)
+        spec = build_alarm_spec(mode="add", value="12:30", label="Lunch", now=now)
         self.assertEqual(spec.scheduled_for, datetime(2026, 6, 4, 12, 30, 0))
         self.assertEqual(spec.label, "Lunch")
-        self.assertEqual(spec.source, "at 12:30")
+        self.assertEqual(spec.source, "add 12:30")
         self.assertEqual(spec.repeat, "none")
+        self.assertEqual(spec.clock_time, time(hour=12, minute=30))
+        self.assertTrue(spec.enabled)
 
     def test_builds_daily_clock_alarm_spec(self):
         now = datetime(2026, 6, 4, 12, 0, 0)
         spec = build_alarm_spec(
-            mode="at",
+            mode="add",
             value="07:30",
             label="Wake",
             now=now,
@@ -121,7 +120,7 @@ class AlarmSpecTests(unittest.TestCase):
     def test_builds_selected_days_clock_alarm_spec(self):
         now = datetime(2026, 6, 4, 12, 0, 0)
         spec = build_alarm_spec(
-            mode="at",
+            mode="add",
             value="09:00",
             label="Standup",
             now=now,
